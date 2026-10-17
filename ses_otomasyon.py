@@ -6,7 +6,7 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask
 
-# --- WEB SUNUCUSU (Render'ı Uyanık Tutmak İçin) ---
+# --- WEB SUNUCUSU (Render'ı 7/24 Ayakta Tutmak İçin) ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -24,10 +24,10 @@ def kendi_kendini_uyandir():
     while True:
         try:
             requests.get(url, timeout=10)
-            print("🟢 [Anti-Sleep] Kendi kendine ping atildi, sunucu uyanik tutuluyor.")
+            print("🟢 [Anti-Sleep] Kendi kendine ping atıldı, sunucu uyanık.")
         except Exception as e:
-            print(f"Ping hatasi: {e}")
-        time.sleep(300)
+            print(f"Ping hatası: {e}")
+        time.sleep(300)  # Her 5 dakikada bir tekrarlar
 
 # --- BAĞLANTI BİLGİLERİ ---
 ID_INSTANCE = "710722770788"
@@ -45,7 +45,7 @@ MAGAZALAR = [
     "4983", "9590", "3569", "6148", "6162"
 ]
 
-# Durum Değerleri: "BEKLIYOR", "YAPILDI", "SORUN_VAR"
+# Durum Takibi: "BEKLIYOR", "YAPILDI", "SORUN_VAR"
 gunluk_durum = {kod: "BEKLIYOR" for kod in MAGAZALAR}
 
 def mesaj_gonder(metin):
@@ -54,7 +54,7 @@ def mesaj_gonder(metin):
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Mesaj hatasi: {e}")
+        print(f"Mesaj hatası: {e}")
 
 def anket_gonder(magaza_kodu):
     url = f"{BASE_URL}/sendPoll/{API_TOKEN}"
@@ -70,9 +70,9 @@ def anket_gonder(magaza_kodu):
     }
     try:
         requests.post(url, json=payload, timeout=10)
-        print(f"Magaza {magaza_kodu} anketi acildi.")
+        print(f"Mağaza {magaza_kodu} anketi açıldı.")
     except Exception as e:
-        print(f"Anket hatasi ({magaza_kodu}): {e}")
+        print(f"Anket hatası ({magaza_kodu}): {e}")
 
 # --- ZAMANLANMIŞ GÖREVLER ---
 
@@ -134,7 +134,7 @@ def gelen_bildirimleri_dinle():
         type_webhook = body.get("typeWebhook", "")
         body_str = str(body)
 
-        # 1. Anket Oyu Yakalama
+        # 1. Anket Oy Bildirimleri
         if "poll" in type_webhook.lower() or "vote" in type_webhook.lower():
             for kod in MAGAZALAR:
                 if kod in body_str:
@@ -145,36 +145,38 @@ def gelen_bildirimleri_dinle():
                         gunluk_durum[kod] = "YAPILDI"
                         print(f"🟢 [TAMAM] Mağaza {kod} kontrolü tamamladı.")
 
-        # 2. Canlı Komut: Biri gruptan !durum yazarsa anlık özet atsın
-        elif type_webhook == "incomingMessageReceived":
-            text_msg = body.get("messageData", {}).get("textMessageData", {}).get("textMessage", "").strip()
-            if text_msg.lower() in ["!durum", "!rapor"]:
-                gorev_1800_kapanis_raporu()
+        # 2. Canlı Komut Kontrolü (!durum veya !rapor)
+        if "!durum" in body_str.lower() or "!rapor" in body_str.lower():
+            print("📢 !durum komutu yakalandı, anlık rapor gönderiliyor...")
+            gorev_1800_kapanis_raporu()
 
-        # Bildirimi kuyruktan sil
+        # Bildirimi kuyruktan temizle
         if receipt_id:
             del_url = f"{BASE_URL}/deleteNotification/{API_TOKEN}/{receipt_id}"
             requests.delete(del_url, timeout=5)
 
-    except Exception:
+    except Exception as e:
         pass
 
 if __name__ == "__main__":
+    # Web sunucusunu başlat (Render için)
     t_flask = threading.Thread(target=run_flask)
     t_flask.daemon = True
     t_flask.start()
 
+    # Kendi kendine ping döngüsünü başlat (Uyku engellemek için)
     t_ping = threading.Thread(target=kendi_kendini_uyandir)
     t_ping.daemon = True
     t_ping.start()
 
+    # Zamanlayıcı (Türkiye Saati: UTC+3)
     sched = BackgroundScheduler(timezone="Europe/Istanbul")
     sched.add_job(gorev_0900_anketleri_baslat, 'cron', hour=9, minute=0)
     sched.add_job(gorev_1700_hatirlatma, 'cron', hour=17, minute=0)
     sched.add_job(gorev_1800_kapanis_raporu, 'cron', hour=18, minute=0)
     sched.start()
     
-    print("Bot basariyla baslatildi. 7/24 dinleme devrede...")
+    print("Bot başarıyla başlatıldı. 7/24 dinleme devrede...")
 
     while True:
         gelen_bildirimleri_dinle()
