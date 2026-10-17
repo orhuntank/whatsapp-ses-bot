@@ -157,7 +157,7 @@ if __name__ == "__main__":
 
     # 3. Saat Ayarlı Görevleri Başlat (Türkiye Saati)
     sched = BackgroundScheduler(timezone="Europe/Istanbul")
-    sched.add_job(gorev_0900_anketleri_baslat, 'cron', hour=9, minute=0)
+    sched.add_job(gorev_0900_anketleri_baslat, 'cron', hour=10, minute=24)
     sched.add_job(gorev_1700_hatirlatma, 'cron', hour=17, minute=0)
     sched.add_job(gorev_1800_kapanis_raporu, 'cron', hour=18, minute=0)
     sched.start()
