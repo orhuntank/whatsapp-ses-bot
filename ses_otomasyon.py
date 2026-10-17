@@ -6,23 +6,35 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask
 
-# --- RENDER WEB SUNUCUSU (Sistemi 7/24 Ayakta Tutar) ---
+# --- WEB SUNUCUSU (Render'ı Uyanık Tutmak İçin) ---
 app = Flask(__name__)
 
 @app.route('/')
 def home():
-    return "Ses Kontrol Botu 7/24 Aktif ve Calisiyor!"
+    return f"Ses Kontrol Botu Aktif! Sunucu Saati: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}"
 
 def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
+
+# --- UYKU ENGELLEYİCİ (Kendi Kendine Ping Atar, Asla Uyumaz) ---
+def kendi_kendini_uyandir():
+    time.sleep(30)  # Sunucu ilk açılırken 30 sn bekle
+    url = "https://whatsapp-ses-bot.onrender.com"
+    while True:
+        try:
+            requests.get(url, timeout=10)
+            print("🟢 [Anti-Sleep] Kendi kendine ping atıldı, sunucu uyanık tutuluyor.")
+        except Exception as e:
+            print(f"Ping hatası: {e}")
+        time.sleep(300)  # Her 5 dakikada bir tekrarlar (Render 15 dk bekler, bu sayede asla uyuyamaz)
 
 # --- BAĞLANTI BİLGİLERİ ---
 ID_INSTANCE = "710722770788"
 API_TOKEN = "365b2fe3080245e5a7e2af4a15638f14d3fbd2d0e8cd4f76a5"
 BASE_URL = f"https://7107.api.greenapi.com/waInstance{ID_INSTANCE}"
 
-# Test Grubu (Aşk Grubu) ID'si
+# Test Grubu (Aşk Grubu)
 CHAT_ID = "120363413102409810@g.us"
 
 # 20 Mağaza Kodunuz
@@ -41,7 +53,7 @@ def mesaj_gonder(metin):
     try:
         requests.post(url, json=payload, timeout=10)
     except Exception as e:
-        print(f"Mesaj hatasi: {e}")
+        print(f"Mesaj hatası: {e}")
 
 def anket_gonder(magaza_kodu):
     url = f"{BASE_URL}/sendPoll/{API_TOKEN}"
@@ -57,9 +69,11 @@ def anket_gonder(magaza_kodu):
     }
     try:
         requests.post(url, json=payload, timeout=10)
-        print(f"Magaza {magaza_kodu} anketi acildi.")
+        print(f"Mağaza {magaza_kodu} anketi açıldı.")
     except Exception as e:
-        print(f"Anket hatasi ({magaza_kodu}): {e}")
+        print(f"Anket hatası ({magaza_kodu}): {e}")
+
+# --- ZAMANLANMIŞ GÖREVLER ---
 
 def gorev_0900_anketleri_baslat():
     global gunluk_durum
@@ -123,7 +137,7 @@ def gelen_oylari_dinle():
                         for vote in votes:
                             if "Yapıldı" in vote.get("optionName", ""):
                                 gunluk_durum[kod] = True
-                                print(f"🟢 Magaza {kod} ses kontrolunu yapti.")
+                                print(f"🟢 Mağaza {kod} ses kontrolünü yaptı.")
 
             del_url = f"{BASE_URL}/deleteNotification/{API_TOKEN}/{receipt_id}"
             requests.delete(del_url, timeout=5)
@@ -131,19 +145,24 @@ def gelen_oylari_dinle():
         pass
 
 if __name__ == "__main__":
-    # Web sunucusunu arka planda başlat
-    t = threading.Thread(target=run_flask)
-    t.daemon = True
-    t.start()
+    # 1. Flask Web Sunucusunu Başlat
+    t_flask = threading.Thread(target=run_flask)
+    t_flask.daemon = True
+    t_flask.start()
 
-    # Zamanlayıcı görevlerini başlat (Türkiye Saati: UTC+3)
+    # 2. Uyku Engelleyici Döngüyü Başlat
+    t_ping = threading.Thread(target=kendi_kendini_uyandir)
+    t_ping.daemon = True
+    t_ping.start()
+
+    # 3. Saat Ayarlı Görevleri Başlat (Türkiye Saati)
     sched = BackgroundScheduler(timezone="Europe/Istanbul")
     sched.add_job(gorev_0900_anketleri_baslat, 'cron', hour=9, minute=0)
     sched.add_job(gorev_1700_hatirlatma, 'cron', hour=17, minute=0)
     sched.add_job(gorev_1800_kapanis_raporu, 'cron', hour=18, minute=0)
     sched.start()
     
-    print("Bot basariyla baslatildi. 7/24 dinleme devrede...")
+    print("Bot basariyla baslatildi. Kendi kendine uyanik kalma devrede...")
 
     while True:
         gelen_oylari_dinle()
