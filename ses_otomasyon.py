@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import threading
 import requests
@@ -7,7 +6,7 @@ from datetime import datetime
 from apscheduler.schedulers.background import BackgroundScheduler
 from flask import Flask
 
-# --- WEB SUNUCUSU (Render'ı Uyanık Tutmak İçin) ---
+# --- WEB SUNUCUSU ---
 app = Flask(__name__)
 
 @app.route('/')
@@ -18,7 +17,7 @@ def run_flask():
     port = int(os.environ.get("PORT", 10000))
     app.run(host="0.0.0.0", port=port)
 
-# --- UYKU ENGELLEYİCİ ---
+# --- UYKU ENGELLEYİCİ (Render'ı Uyutmaz) ---
 def kendi_kendini_uyandir():
     time.sleep(30)
     url = "https://whatsapp-ses-bot.onrender.com"
@@ -27,13 +26,14 @@ def kendi_kendini_uyandir():
             requests.get(url, timeout=10)
         except Exception:
             pass
-        time.sleep(300)
+        time.sleep(240)  # Her 4 dakikada bir ping
 
 # --- BAĞLANTI BİLGİLERİ ---
 ID_INSTANCE = "710722770788"
 API_TOKEN = "365b2fe3080245e5a7e2af4a15638f14d3fbd2d0e8cd4f76a5"
 BASE_URL = f"https://7107.api.greenapi.com/waInstance{ID_INSTANCE}"
 
+# Test Grubu (Deneme)
 CHAT_ID = "120363413102409810@g.us"
 
 MAGAZALAR = [
@@ -43,24 +43,8 @@ MAGAZALAR = [
     "4983", "9590", "3569", "6148", "6162"
 ]
 
-DURUM_DOSYASI = "gunluk_durum.json"
-
-# --- KALICI VERİ YÖNETİMİ ---
-def durumu_yukle():
-    if os.path.exists(DURUM_DOSYASI):
-        try:
-            with open(DURUM_DOSYASI, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except Exception:
-            pass
-    return {"tarih": datetime.now().strftime("%d.%m.%Y"), "durum": {kod: "BEKLIYOR" for kod in MAGAZALAR}}
-
-def durumu_kaydet(veri):
-    try:
-        with open(DURUM_DOSYASI, "w", encoding="utf-8") as f:
-            json.dump(veri, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"Kayıt hatası: {e}")
+# HAFIZA (RAM + Dinamik Güncelleme)
+DURUM = {kod: "BEKLIYOR" for kod in MAGAZALAR}
 
 def mesaj_gonder(metin):
     url = f"{BASE_URL}/sendMessage/{API_TOKEN}"
@@ -84,27 +68,24 @@ def anket_gonder(magaza_kodu):
     }
     try:
         requests.post(url, json=payload, timeout=10)
-        print(f"Mağaza {magaza_kodu} anketi açıldı.")
     except Exception as e:
         print(f"Anket hatası ({magaza_kodu}): {e}")
 
-# --- GÖREVLER ---
+# --- ZAMANLANMIŞ GÖREVLER ---
 
 def gorev_0900_anketleri_baslat():
-    veri = {"tarih": datetime.now().strftime("%d.%m.%Y"), "durum": {kod: "BEKLIYOR" for kod in MAGAZALAR}}
-    durumu_kaydet(veri)
-    
+    global DURUM
+    DURUM = {kod: "BEKLIYOR" for kod in MAGAZALAR}
     mesaj_gonder("📢 *Günaydın! Günlük ses kontrol anketleri açılıyor...*")
     
     for kod in MAGAZALAR:
         anket_gonder(kod)
-        time.sleep(1.5)
+        time.sleep(1.2)
 
     mesaj_gonder("✅ *Tüm mağaza anketleri paylaşıldı. Lütfen kontroller tamamlandığında durumunuzu işaretleyiniz.*")
 
 def gorev_1700_hatirlatma():
-    veri = durumu_yukle()
-    bekleyenler = [kod for kod, dur in veri["durum"].items() if dur == "BEKLIYOR"]
+    bekleyenler = [kod for kod, dur in DURUM.items() if dur == "BEKLIYOR"]
     if not bekleyenler:
         mesaj_gonder("🎉 *Saat 17:00 itibarıyla tüm mağazalarımız kontrol durumunu bildirmiştir.*")
         return
@@ -117,13 +98,10 @@ def gorev_1700_hatirlatma():
     )
     mesaj_gonder(uyari)
 
-def rapor_olustur(kapanis_mi=False):
-    veri = durumu_yukle()
-    durum_sozlugu = veri["durum"]
-    
-    tamamlayanlar = [kod for kod, d in durum_sozlugu.items() if d == "YAPILDI"]
-    sorunlular = [kod for kod, d in durum_sozlugu.items() if d == "SORUN_VAR"]
-    eksikler = [kod for kod, d in durum_sozlugu.items() if d == "BEKLIYOR"]
+def rapor_gonder(kapanis_mi=False):
+    tamamlayanlar = [kod for kod, d in DURUM.items() if d == "YAPILDI"]
+    sorunlular = [kod for kod, d in DURUM.items() if d == "SORUN_VAR"]
+    eksikler = [kod for kod, d in DURUM.items() if d == "BEKLIYOR"]
     
     su_an = datetime.now().strftime("%H:%M")
     tarih_str = datetime.now().strftime("%d.%m.%Y")
@@ -146,8 +124,9 @@ def rapor_olustur(kapanis_mi=False):
     mesaj_gonder(rapor)
 
 def gorev_1800_kapanis_raporu():
-    rapor_olustur(kapanis_mi=True)
+    rapor_gonder(kapanis_mi=True)
 
+# --- ZIRHLI OY VE MESAJ DİNLEME ---
 def gelen_bildirimleri_dinle():
     url = f"{BASE_URL}/receiveNotification/{API_TOKEN}"
     try:
@@ -159,39 +138,46 @@ def gelen_bildirimleri_dinle():
         receipt_id = data.get("receiptId")
         body = data.get("body", {})
         type_webhook = body.get("typeWebhook", "")
-        body_str = str(body)
+        body_raw = str(body)
 
-        # 1. Anket Oyu Yakalama
+        # 1. ANKET OYU YAKALAMA
         if "poll" in type_webhook.lower() or "vote" in type_webhook.lower():
-            message_data = body.get("messageData", {})
-            vote_data = message_data.get("pollVoteMessageData", {})
-            user_votes = vote_data.get("votes", [])
-            poll_name = message_data.get("pollMessageData", {}).get("name", "")
-
-            bulunan_magaza = None
+            # Hangi mağaza?
+            hedef_magaza = None
             for kod in MAGAZALAR:
-                if kod in poll_name or kod in body_str:
-                    bulunan_magaza = kod
+                if kod in body_raw:
+                    hedef_magaza = kod
                     break
 
-            if bulunan_magaza and user_votes:
-                veri = durumu_yukle()
-                secilen_metinler = " ".join([v.get("optionName", "") for v in user_votes])
+            if hedef_magaza:
+                # Oylanan şıkkı net tespit et
+                message_data = body.get("messageData", {})
+                vote_info = message_data.get("pollVoteMessageData", {})
+                votes = vote_info.get("votes", [])
+                
+                secimler = " ".join([str(v) for v in votes]) + " " + body_raw
 
-                if "Sorun Var" in secilen_metinler:
-                    veri["durum"][bulunan_magaza] = "SORUN_VAR"
-                    print(f"⚠️ [SORUN] Mağaza {bulunan_magaza} sorun bildirdi.")
-                elif "Yapıldı" in secilen_metinler or "Yapildi" in secilen_metinler:
-                    veri["durum"][bulunan_magaza] = "YAPILDI"
-                    print(f"🟢 [TAMAM] Mağaza {bulunan_magaza} kontrolü sorunsuz tamamladı.")
+                # Önce 'Sorun Var' kontrolü (bizzat seçilmişse)
+                if "'Sorun Var" in secimler or "Sorun Var ❌" in secimler:
+                    DURUM[hedef_magaza] = "SORUN_VAR"
+                    print(f"⚠️ [ARIZA] {hedef_magaza} sorun bildirdi.")
+                elif "'Yapıldı" in secimler or "Yapıldı ✅" in secimler or "Yapildi" in secimler:
+                    DURUM[hedef_magaza] = "YAPILDI"
+                    print(f"🟢 [OK] {hedef_magaza} sorunsuz tamamlandı.")
 
-                durumu_kaydet(veri)
+        # 2. METİN MESAJI İLE YEDEKLEME (Örn: Mağaza '8219 yapıldı' yazarsa da yakalar)
+        for kod in MAGAZALAR:
+            if kod in body_raw:
+                if any(x in body_raw.lower() for x in ["ariza", "arıza", "sorun", "calismiyor", "çalışmıyor"]):
+                    DURUM[kod] = "SORUN_VAR"
+                elif any(x in body_raw.lower() for x in ["tamam", "ok", "yapildi", "yapıldı", "calisiyor", "çalışıyor"]):
+                    DURUM[kod] = "YAPILDI"
 
-        # 2. Canlı Komut Kontrolü (!durum veya !rapor)
-        if "!durum" in body_str.lower() or "!rapor" in body_str.lower():
-            rapor_olustur(kapanis_mi=False)
+        # 3. CANLI SORGULAMA KOMUTU (!durum veya !rapor)
+        if "!durum" in body_raw.lower() or "!rapor" in body_raw.lower():
+            rapor_gonder(kapanis_mi=False)
 
-        # Bildirimi kuyruktan temizle
+        # Bildirimi Green-API kuyruğundan sil
         if receipt_id:
             del_url = f"{BASE_URL}/deleteNotification/{API_TOKEN}/{receipt_id}"
             requests.delete(del_url, timeout=5)
@@ -200,21 +186,24 @@ def gelen_bildirimleri_dinle():
         pass
 
 if __name__ == "__main__":
+    # 1. Flask Web Servisi
     t_flask = threading.Thread(target=run_flask)
     t_flask.daemon = True
     t_flask.start()
 
+    # 2. Uyku Engelleyici
     t_ping = threading.Thread(target=kendi_kendini_uyandir)
     t_ping.daemon = True
     t_ping.start()
 
+    # 3. Görev Saatleri (Türkiye Saati)
     sched = BackgroundScheduler(timezone="Europe/Istanbul")
     sched.add_job(gorev_0900_anketleri_baslat, 'cron', hour=9, minute=0)
     sched.add_job(gorev_1700_hatirlatma, 'cron', hour=17, minute=0)
     sched.add_job(gorev_1800_kapanis_raporu, 'cron', hour=18, minute=0)
     sched.start()
 
-    print("Bot basariyla baslatildi. Kalici veri modu devrede...")
+    print("Bot basariyla baslatildi. Tam kalici dinleme modunda...")
 
     while True:
         gelen_bildirimleri_dinle()
